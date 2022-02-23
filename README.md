@@ -2,7 +2,7 @@
 
 1D/2D keras U-net model.
 
-## Hyper-parameters definition example
+## Hyper-parameter definition example
 
 ```
 unet = make_unet(input_shape=(64,64, 3),
