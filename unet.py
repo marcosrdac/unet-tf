@@ -1,14 +1,7 @@
-import json
 import keras as K
 import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers, callbacks
-from sklearn.model_selection import train_test_split
-import matplotlib.pyplot as plt
+from tensorflow.keras import layers, models
 import numpy as np
-import pickle as pkl
-from datetime import datetime
-from os.path import dirname, basename, splitext, join
-from os import makedirs
 from os import environ
 
 # environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -170,6 +163,15 @@ def make_unet_autoencoder(input_shape, *args, **kwargs):
 
 
 if __name__ == "__main__":
+    import json
+    import pickle as pkl
+    from datetime import datetime
+    from os.path import dirname, basename, splitext, join
+    from os import makedirs
+    from tensorflow.keras import optimizers, callbacks
+    from sklearn.model_selection import train_test_split
+    import matplotlib.pyplot as plt
+
     # defining data
     # print('1D U-net')
     # X_true = np.ones((10, 64, 3))
