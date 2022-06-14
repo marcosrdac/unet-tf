@@ -1,8 +1,17 @@
-import keras as K
+# !pip3 install tensorflow_graphics
+
+# +
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 import tensorflow as tf
 from tensorflow.keras import layers, models
+# import tensorflow_graphics.math.interpolation as tfgmi
+# import tensorflow.keras as keras
+import keras as K
 import numpy as np
 from os import environ
+# -
 
 # environ['CUDA_VISIBLE_DEVICES'] = '0'
 
@@ -18,18 +27,16 @@ def make_unet(input_shape,
               activation='relu',
               first_activation='tanh',
               last_activation='linear',
-              interpolator='nearest',
-              last_interpolator=None,
               norm=False,
               dropout=False,
               norm_at_start=False,
               nconvs_bottom=None,
               use_skip_connections=True,
               return_encoders=False,
+              batch_size=None,
               verbose=False):
     '''
-    Makes 1D or 2D U-net model with resising instead of upsampling layers when
-    decoding.
+    Makes a 1D, 2D or 3D U-net model replacing transposed convolution by resising for decoding.
     '''
     # TODO add dropout?
 
@@ -37,28 +44,41 @@ def make_unet(input_shape,
     ndim = len(resolution)
 
     if ndim == 1:
-        Conv = layers.Conv1D
-        Pooling = layers.AveragePooling1D
-        SpatialDropout = layers.SpatialDropout1D
+        conv = layers.Conv1D
+        pool = layers.AveragePooling1D
+        drop = layers.SpatialDropout1D
     elif ndim == 2:
-        Conv = layers.Conv2D
-        Pooling = layers.AveragePooling2D
-        SpatialDropout = layers.SpatialDropout2D
+        conv = layers.Conv2D
+        pool = layers.AveragePooling2D
+        drop = layers.SpatialDropout2D
+    elif ndim == 3:
+        conv = layers.Conv3D
+        pool = layers.AveragePooling3D
+        drop = layers.SpatialDropout3D
     else:
-        raise IndexError('Input data must be 1D or 2D.')
+        raise IndexError('Input data must be 1D, 2D or 3D.')
 
     nconvs_bottom = nconvs_bottom or nconvs_by_scale
     first_activation = first_activation or activation
     last_activation = last_activation or activation
-    last_interpolator = last_interpolator or interpolator
-
-    def ConvLayer(x,
+    
+    def nearest_resample_3d(tensor, shape):
+        idx = tf.cast(tf.where(tf.ones(shape[1:-1], dtype=tf.bool)), dtype=tf.float32)
+        numerator = tf.cast(tensor.shape[1:-1], dtype=tf.float32) - 1
+        denominator = tf.cast(shape[1:-1], tf.float32) - 1
+        idx *= numerator / denominator
+        idx = tf.cast(tf.round(tf.where(~tf.math.is_nan(idx), idx, 0)), dtype=tf.int64)
+        idx = tf.repeat(idx[None, ...], shape[0], axis=0)
+        interpolated = tf.gather_nd(tensor, idx, batch_dims=1)
+        return tf.reshape(interpolated, shape)
+    
+    def convolution(x,
                   filters,
                   kernel_size=kernel_size,
                   strides=1,
                   activation=activation):
         '''Default convolution layer + activation operation.'''
-        x = Conv(filters=filters,
+        x = conv(filters=filters,
                  kernel_size=kernel_size,
                  strides=strides,
                  padding='same')(x)
@@ -74,7 +94,7 @@ def make_unet(input_shape,
         if norm_at_start:
             x = layers.BatchNormalization()(x)
 
-        x = ConvLayer(x, base_filters, activation=first_activation)
+        x = convolution(x, base_filters, activation=first_activation)
 
         if verbose:
             print('prepare ', x.shape)
@@ -85,7 +105,7 @@ def make_unet(input_shape,
         for scale in range(scales):
             filters = base_filters * 2**(scale + 1)
             for conv in range(nconvs_by_scale):
-                x = ConvLayer(x, filters, activation=activation)
+                x = convolution(x, filters, activation=activation)
             if norm:
                 x = layers.BatchNormalization()(x)
 
@@ -93,15 +113,15 @@ def make_unet(input_shape,
             old.append(x)
 
             # lowering resolution
-            x = Pooling(pool_size=3, strides=2, padding='same')(x)
+            x = pool(pool_size=3, strides=2, padding='same')(x)
             if verbose:
                 print('downward', x.shape)
 
         # bottom path
         for conv in range(nconvs_bottom):
-            x = ConvLayer(x, filters)
+            x = convolution(x, filters)
         if dropout:
-            x = SpatialDropout(dropout)(x)
+            x = drop(dropout)(x)
         if norm:
             x = layers.BatchNormalization()(x)
 
@@ -114,35 +134,34 @@ def make_unet(input_shape,
             x_old = old[scale]
             filters = int(x_old.shape[-1] / 2)
 
-            # 'if' needed for 1D/2D data resizing compatibility
-            if ndim == 1:
-                x = x[:, :, None, :]
-                x_old = x_old[:, :, None, :]
-            _interpolator = last_interpolator if scale == 0 else interpolator
-            x = layers.Resizing(*x_old.shape[1:-1], _interpolator)(x)
-            if ndim == 1:
-                x = x[:, :, 0, :]
-                x_old = x_old[:, :, 0, :]
+            # 3D upsample
+            x_old_exp = x_old
+            for d_miss in range(3 - ndim):
+                x = tf.expand_dims(x, axis=3)
+                x_old_exp = tf.expand_dims(x_old_exp, axis=3)
+            x = nearest_resample_3d(x, tf.shape(x_old_exp))
+            for d_miss in range(3 - ndim):
+                x = tf.squeeze(x, axis=3+d_miss)
 
             if use_skip_connections:
                 x = layers.Concatenate()([x_old, x])
 
             for conv in range(nconvs_by_scale):
-                x = ConvLayer(x, filters)
+                x = convolution(x, filters)
             if norm:
                 x = layers.BatchNormalization()(x)
             if verbose:
                 print('upward  ', x.shape)
 
-        # final convolution return correct number of outputs
-        x = ConvLayer(x, nout, activation=last_activation)
+        # return correct number of outputs
+        x = convolution(x, nout, activation=last_activation)
 
         if verbose:
             print('out     ', x.shape)
 
         return x
 
-    encoder_input = K.Input(shape=input_shape, name='input_image')
+    encoder_input = K.Input(shape=input_shape, batch_size=batch_size, name='input_image')
     encoder_output, old = encode(encoder_input)
     decoder_output = decode(encoder_output, old)
 
@@ -172,10 +191,6 @@ if __name__ == "__main__":
     from sklearn.model_selection import train_test_split
     import matplotlib.pyplot as plt
 
-    # defining data
-    # print('1D U-net')
-    # X_true = np.ones((10, 64, 3))
-    # Y_true = np.ones((10, 64, 2))
 
     print('2D U-net')
     X_true = np.ones((10, 32, 64, 3))
@@ -184,15 +199,13 @@ if __name__ == "__main__":
     model_kw = dict(
         input_shape=X_true.shape[1:],
         nout=Y_true.shape[-1],
-        scales=5,
+        scales=3,
         nconvs_by_scale=2,
         base_filters=8,
         kernel_size=3,
         activation='relu',
         first_activation='tanh',
         last_activation='linear',
-        interpolator='nearest',
-        last_interpolator=None,
         dropout=.3,
         norm=False,
         norm_at_start=False,
