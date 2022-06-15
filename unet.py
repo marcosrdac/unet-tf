@@ -1,8 +1,8 @@
 # !pip3 install tensorflow_graphics
 
 # +
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -18,8 +18,9 @@ from os import environ
 tf.config.run_functions_eagerly(True)
 
 
-def make_unet(input_shape,
-              nout=1,
+def make_unet(ndim=1,
+              input_channels=1,
+              output_channels=1,
               scales=5,
               nconvs_by_scale=2,
               base_filters=8,
@@ -40,9 +41,6 @@ def make_unet(input_shape,
     '''
     # TODO add dropout?
 
-    *resolution, feats = input_shape
-    ndim = len(resolution)
-
     if ndim == 1:
         conv = layers.Conv1D
         pool = layers.AveragePooling1D
@@ -62,16 +60,6 @@ def make_unet(input_shape,
     first_activation = first_activation or activation
     last_activation = last_activation or activation
     
-    def nearest_resample_3d(tensor, shape):
-        idx = tf.cast(tf.where(tf.ones(shape[1:-1], dtype=tf.bool)), dtype=tf.float32)
-        numerator = tf.cast(tensor.shape[1:-1], dtype=tf.float32) - 1
-        denominator = tf.cast(shape[1:-1], tf.float32) - 1
-        idx *= numerator / denominator
-        idx = tf.cast(tf.round(tf.where(~tf.math.is_nan(idx), idx, 0)), dtype=tf.int64)
-        idx = tf.repeat(idx[None, ...], shape[0], axis=0)
-        interpolated = tf.gather_nd(tensor, idx, batch_dims=1)
-        return tf.reshape(interpolated, shape)
-    
     def convolution(x,
                   filters,
                   kernel_size=kernel_size,
@@ -85,6 +73,21 @@ def make_unet(input_shape,
         if activation is not None:
             x = layers.Activation(activation)(x)
         return x
+    
+    def nearest_resample_3d(tensor, shape):
+        old_shape = tf.shape(tensor)
+        axes = [
+            tf.linspace(0, old_shape[0]-1, shape[0]),
+            tf.linspace(0, old_shape[1]-1, shape[1]),
+            tf.linspace(0, old_shape[2]-1, shape[2]),
+            tf.linspace(0, old_shape[3]-1, shape[3]),
+        ]
+        grid = tf.convert_to_tensor(tf.meshgrid(*axes, indexing='ij'))
+        idx = tf.reshape(grid, (4, old_shape[0], -1))
+        idx = tf.transpose(idx, (1,2,0))
+        idx = tf.cast(idx, tf.int64)
+        interp = tf.gather_nd(tensor, idx, batch_dims=0)
+        return tf.reshape(interp, shape)
 
     def encode(x):
         '''Defines U-net encoding phase.'''
@@ -154,13 +157,14 @@ def make_unet(input_shape,
                 print('upward  ', x.shape)
 
         # return correct number of outputs
-        x = convolution(x, nout, activation=last_activation)
+        x = convolution(x, output_channels, activation=last_activation)
 
         if verbose:
             print('out     ', x.shape)
 
         return x
 
+    input_shape = tf.TensorShape(ndim*[None] + [input_channels])
     encoder_input = K.Input(shape=input_shape, batch_size=batch_size, name='input_image')
     encoder_output, old = encode(encoder_input)
     decoder_output = decode(encoder_output, old)
@@ -177,8 +181,10 @@ def make_unet(input_shape,
     return model
 
 
-def make_unet_autoencoder(input_shape, *args, **kwargs):
-    return make_unet(input_shape, nout=input_shape[-1], *args, **kwargs)
+def make_unet_autoencoder(*args, **kwargs):
+    kwargs["output_channels"] = kwargs.get(
+        "input_channels", kwargs["input_channels"])
+    return make_unet(*args, **kwargs)
 
 
 if __name__ == "__main__":
@@ -196,9 +202,11 @@ if __name__ == "__main__":
     X_true = np.ones((10, 32, 64, 3))
     Y_true = np.ones((10, 32, 64, 2))
 
+    print(X_true.ndim-2)
     model_kw = dict(
-        input_shape=X_true.shape[1:],
-        nout=Y_true.shape[-1],
+        ndim=X_true.ndim - 2, # -(batch_dims+channel_dims)
+        input_channels=X_true.shape[-1],
+        output_channels=Y_true.shape[-1],
         scales=3,
         nconvs_by_scale=2,
         base_filters=8,
