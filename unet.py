@@ -74,7 +74,7 @@ def make_unet(ndim=1,
             x = layers.Activation(activation)(x)
         return x
     
-    def nearest_resample_3d(tensor, shape):
+    def nearest_resample_3d(tensor, shape, idx_dtype=tf.int32):
         old_shape = tf.shape(tensor)
         axes = [
             tf.linspace(0, old_shape[0]-1, shape[0]),
@@ -82,10 +82,8 @@ def make_unet(ndim=1,
             tf.linspace(0, old_shape[2]-1, shape[2]),
             tf.linspace(0, old_shape[3]-1, shape[3]),
         ]
-        grid = tf.convert_to_tensor(tf.meshgrid(*axes, indexing='ij'))
-        idx = tf.reshape(grid, (4, old_shape[0], -1))
-        idx = tf.transpose(idx, (1,2,0))
-        idx = tf.cast(idx, tf.int64)
+        grid = tf.stack(tf.meshgrid(*axes, indexing='ij'), axis=-1)
+        idx = tf.cast(tf.reshape(grid, (shape[0], -1, 4)), idx_dtype)
         interp = tf.gather_nd(tensor, idx, batch_dims=0)
         return tf.reshape(interp, shape)
 
